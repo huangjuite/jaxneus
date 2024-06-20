@@ -1,0 +1,18 @@
+# conda env create --file conda.yaml
+name: jaxneus
+channels:
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - jax
+  - jaxlib=*=*cuda*
+  - cuda-nvcc
+  - jaxtyping
+  - optax
+  - flax
+  - PyMCubes
+  - open3d
+  - pip
+  - pip:
+    - -r requirements.txt

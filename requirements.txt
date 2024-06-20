@@ -1,0 +1,14 @@
+pyparsing
+pyhocon
+opencv_python
+scipy
+trimesh
+tqdm
+matplotlib
+pathlib
+pyyaml
+scipy
+tensorboard
+scikit-image
+ninja
+icecream
