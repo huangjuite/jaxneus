@@ -120,46 +120,46 @@ class Dataset:
         l = resolution_level
         tx = np.linspace(0, self.W - 1, self.W // l)
         ty = np.linspace(0, self.H - 1, self.H // l)
-        pixels_x, pixels_y = np.meshgrid(tx, ty)
-        p = np.stack(
-            [pixels_x, pixels_y, np.ones_like(pixels_y)], dim=-1
-        )  # W, H, 3
+        pixels_x, pixels_y = np.meshgrid(tx, ty, indexing="ij")
+        p = np.stack([pixels_x, pixels_y, np.ones_like(pixels_y)], axis=-1)  # W, H, 3
         p = np.matmul(
             self.intrinsics_all_inv[img_idx, None, None, :3, :3], p[:, :, :, None]
         ).squeeze()  # W, H, 3
-        rays_v = p / np.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
+        rays_v = p / np.linalg.norm(p, ord=2, axis=-1, keepdims=True)  # W, H, 3
         rays_v = np.matmul(
             self.pose_all[img_idx, None, None, :3, :3], rays_v[:, :, :, None]
         ).squeeze()  # W, H, 3
-        rays_o = self.pose_all[img_idx, None, None, :3, 3].expand(
-            rays_v.shape
+        rays_o = np.repeat(
+            self.pose_all[img_idx, None, :3, 3], self.W // l * self.H // l, axis=0
+        ).reshape(
+            self.W // l, self.H // l, 3
         )  # W, H, 3
-        return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
+        return rays_o, rays_v.swapaxes(0, 1)
 
     def gen_random_rays_at(self, img_idx, batch_size):
         """
         Generate random rays at world space from one camera.
         """
-        pixels_x = torch.randint(low=0, high=self.W, size=[batch_size])
-        pixels_y = torch.randint(low=0, high=self.H, size=[batch_size])
+        pixels_x = np.random.randint(low=0, high=self.W, size=[batch_size])
+        pixels_y = np.random.randint(low=0, high=self.H, size=[batch_size])
         color = self.images[img_idx][(pixels_y, pixels_x)]  # batch_size, 3
         mask = self.masks[img_idx][(pixels_y, pixels_x)]  # batch_size, 3
-        p = torch.stack(
-            [pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1
-        ).float()  # batch_size, 3
-        p = torch.matmul(
+        p = np.stack([pixels_x, pixels_y, np.ones_like(pixels_y)], axis=-1).astype(
+            np.float32
+        )  # batch_size, 3
+        p = np.matmul(
             self.intrinsics_all_inv[img_idx, None, :3, :3], p[:, :, None]
         ).squeeze()  # batch_size, 3
-        rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # batch_size, 3
-        rays_v = torch.matmul(
+        rays_v = p / np.linalg.norm(p, ord=2, axis=-1, keepdims=True)  # batch_size, 3
+        rays_v = np.matmul(
             self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]
         ).squeeze()  # batch_size, 3
-        rays_o = self.pose_all[img_idx, None, :3, 3].expand(
-            rays_v.shape
+        rays_o = np.repeat(
+            self.pose_all[img_idx, None, :3, 3], batch_size, axis=0
         )  # batch_size, 3
-        return torch.cat(
-            [rays_o.cpu(), rays_v.cpu(), color, mask[:, :1]], dim=-1
-        ).cuda()  # batch_size, 10
+        return np.concatenate(
+            [rays_o, rays_v, color, mask[:, :1]], axis=-1
+        )  # batch_size, 10
 
     def gen_rays_between(self, idx_0, idx_1, ratio, resolution_level=1):
         """
@@ -204,8 +204,8 @@ class Dataset:
         return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
 
     def near_far_from_sphere(self, rays_o, rays_d):
-        a = torch.sum(rays_d**2, dim=-1, keepdim=True)
-        b = 2.0 * torch.sum(rays_o * rays_d, dim=-1, keepdim=True)
+        a = np.sum(rays_d**2, axis=-1, keepdims=True)
+        b = 2.0 * np.sum(rays_o * rays_d, axis=-1, keepdims=True)
         mid = 0.5 * (-b) / a
         near = mid - 1.0
         far = mid + 1.0

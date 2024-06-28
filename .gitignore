@@ -2,3 +2,5 @@ wandb/
 __pycache__/
 experiments/
 public_data/
+exp/
+.vscode/

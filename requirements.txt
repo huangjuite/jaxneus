@@ -1,6 +1,7 @@
 pyparsing
 pyhocon
 opencv_python
+open3d
 scipy
 trimesh
 tqdm
@@ -8,7 +9,7 @@ matplotlib
 pathlib
 pyyaml
 scipy
-tensorboard
+tensorboardX
 scikit-image
 ninja
 icecream

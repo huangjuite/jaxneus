@@ -1,7 +1,5 @@
-import numpy as np
 import mcubes
-from tqdm import tqdm
-
+import numpy as np
 from typing import Callable
 
 
@@ -11,13 +9,11 @@ def extract_geometry(
     resolution: int,  # cell/m
     threshold: float,
     query_func: Callable,
-    batch_size: int = 2048,
+    batch_size: int = 2**15,
 ):
-
-    size = ((bound_max - bound_min) * resolution).astype(int)
     x, y, z = [
-        np.linspace(l, u, s, dtype=np.float32)
-        for l, u, s in zip(bound_min, bound_max, size)
+        np.linspace(l, u, resolution, dtype=np.float32)
+        for l, u in zip(bound_min, bound_max)
     ]
 
     grid = np.meshgrid(x, y, z, indexing="ij")
@@ -25,13 +21,11 @@ def extract_geometry(
 
     sd = []
     xyz = np.array_split(xyz, np.ceil(xyz.shape[0] / batch_size))
-    pbar = tqdm(xyz)
-    pbar.set_description("extracting mesh")
-    for pts in pbar:
+    for pts in xyz:
         sd.append(query_func(pts))
-    sd = np.concatenate(sd).reshape(size)
+    sd = np.concatenate(sd).reshape([resolution] * 3)
 
     vertices, triangles = mcubes.marching_cubes(sd, threshold)
-    vertices = vertices / resolution 
+    vertices = vertices / (resolution - 1.0) * (bound_max - bound_min) + bound_min
 
     return vertices, triangles

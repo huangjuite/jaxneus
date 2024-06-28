@@ -8,14 +8,7 @@ from typing import Union
 
 
 class FreqEmbedder:
-    """Multi Freqquency Embedder.
-
-    Parameters
-    ----------
-    input_dims
-    frequency_num
-    log_sampling
-    """
+    """Multi Freqquency Embedder."""
 
     def __init__(
         self,
@@ -38,10 +31,3 @@ class FreqEmbedder:
         sins = jnp.sin(x[None, :] * self.freq_bands[:, None])
         coss = jnp.cos(x[None, :] * self.freq_bands[:, None])
         return jnp.concat((x, sins.reshape(-1), coss.reshape(-1)))
-
-
-if __name__ == "__main__":
-    embd_fun = FreqEmbedder()
-    out = embd_fun(jnp.array([1, 2, 3]))
-    print(embd_fun.output_dim)
-    print(out.shape)
