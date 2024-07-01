@@ -1,10 +1,38 @@
 import jax
 from jax import numpy as jnp
-
 from jaxtyping import Array, Float
-
-from models.embedder import FreqEmbedder
 from flax import linen as nn
+from models.embedder import FreqEmbedder
+
+
+def InitNormal(mean=0.0, stddev=1.0):
+    def init(key, shape, dtype=jnp.float32):
+        return jax.random.normal(key, shape, dtype) * stddev + mean
+
+    return init
+
+
+class SeperateInitializedDense(nn.Module):
+    """variance scaling with scale 2.0, fan_out, and normal for input 1,
+    zeros for input 2
+    """
+
+    features: int
+
+    @nn.compact
+    def __call__(
+        self, x1: Float[Array, "b f1"], x2: Float[Array, "b f2"]
+    ) -> Float[Array, "b f"]:
+        w1 = self.param(
+            "kernel/w1",
+            InitNormal(stddev=jnp.sqrt(2.0 / self.features)),
+            (x1.shape[-1], self.features),
+        )
+        w2 = self.param(
+            "kernel/w2", nn.initializers.zeros_init(), (x2.shape[-1], self.features)
+        )
+        bias = self.param("bias", nn.initializers.zeros_init(), (self.features,))
+        return jnp.dot(x1, w1) + jnp.dot(x2, w2) + bias
 
 
 class SDFNetwork(nn.Module):
@@ -34,15 +62,36 @@ class SDFNetwork(nn.Module):
                 out_dim = dims[l + 1] - dims[0]
             else:
                 out_dim = dims[l + 1]
-            lin = nn.Dense(
-                out_dim,
-                kernel_init=nn.initializers.normal(stddev=jnp.sqrt(2 / out_dim)),
-            )
+
+            if self.geometric_init:
+                if l == self.num_layers - 2:
+                    mean = jnp.sqrt(jnp.pi / dims[l])
+                    mean *= -1 if self.inside_outside else 1
+                    bias = self.bias if self.inside_outside else -self.bias
+                    lin = nn.Dense(
+                        out_dim,
+                        kernel_init=InitNormal(mean=mean, stddev=0.0001),
+                        bias_init=nn.initializers.constant(bias),
+                    )
+                elif self.multires > 0 and (l == 0 or l in self.skip_in):
+                    lin = SeperateInitializedDense(out_dim)
+                else:
+                    lin = nn.Dense(
+                        out_dim,
+                        kernel_init=InitNormal(stddev=jnp.sqrt(2.0 / out_dim)),
+                        bias_init=nn.initializers.zeros_init(),
+                    )
 
             if self.weight_norm:
-                lin = nn.WeightNorm(lin)
+                lin = nn.WeightNorm(lin, variable_filter={"kernel"}, use_scale=False)
 
             setattr(self, f"lin_{l}", lin)
+
+    def _softplus(self, x, beta=1, threshold=20):
+        x_safe = jax.lax.select(x * beta < threshold, x, jnp.ones_like(x))
+        return jax.lax.select(
+            x * beta < threshold, 1 / beta * jnp.log(1 + jnp.exp(beta * x_safe)), x
+        )
 
     def __call__(
         self, inputs: Float[Array, "b 3"]
@@ -54,19 +103,23 @@ class SDFNetwork(nn.Module):
         for l in range(self.num_layers - 1):
             lin = getattr(self, f"lin_{l}")
 
-            if l in self.skip_in:
-                x = jnp.concatenate([inputs, x], axis=-1)
+            if l == 0 and self.multires > 0:
+                x = lin(x[:, :3], x[:, 3:])
+            elif l in self.skip_in and self.multires > 0:
+                x = lin(
+                    jnp.concatenate([x, inputs[:, :3]], axis=-1) / jnp.sqrt(2),
+                    inputs[:, 3:] / jnp.sqrt(2),
+                )
+            else:
+                x = lin(x)
 
-            x = lin(x)
             if l < self.num_layers - 2:
-                x = nn.softplus(x)
+                x = self._softplus(x, beta=100)
+                # x = nn.softplus(x * 100) / 100
 
         sd = x[:, :1] / self.scale
         feature = x[:, 1:]
-        # return sd, feature
         return jnp.concatenate([sd, feature], axis=-1)
-        # return {'sd': sd, 'feature': feature}
-        # return [sd, feature]
 
 
 class RenderingNetwork(nn.Module):

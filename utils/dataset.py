@@ -134,7 +134,7 @@ class Dataset:
         ).reshape(
             self.W // l, self.H // l, 3
         )  # W, H, 3
-        return rays_o, rays_v.swapaxes(0, 1)
+        return rays_o, np.swapaxes(rays_v, 0, 1)
 
     def gen_random_rays_at(self, img_idx, batch_size):
         """
@@ -166,24 +166,20 @@ class Dataset:
         Interpolate pose between two cameras.
         """
         l = resolution_level
-        tx = torch.linspace(0, self.W - 1, self.W // l)
-        ty = torch.linspace(0, self.H - 1, self.H // l)
-        pixels_x, pixels_y = torch.meshgrid(tx, ty)
-        p = torch.stack(
-            [pixels_x, pixels_y, torch.ones_like(pixels_y)], dim=-1
-        )  # W, H, 3
-        p = torch.matmul(
+        tx = np.linspace(0, self.W - 1, self.W // l)
+        ty = np.linspace(0, self.H - 1, self.H // l)
+        pixels_x, pixels_y = np.meshgrid(tx, ty, indexing="ij")
+        p = np.stack([pixels_x, pixels_y, np.ones_like(pixels_y)], axis=-1)  # W, H, 3
+        p = np.matmul(
             self.intrinsics_all_inv[0, None, None, :3, :3], p[:, :, :, None]
         ).squeeze()  # W, H, 3
-        rays_v = p / torch.linalg.norm(p, ord=2, dim=-1, keepdim=True)  # W, H, 3
+        rays_v = p / np.linalg.norm(p, ord=2, axis=-1, keepdims=True)  # W, H, 3
         trans = (
             self.pose_all[idx_0, :3, 3] * (1.0 - ratio)
             + self.pose_all[idx_1, :3, 3] * ratio
         )
-        pose_0 = self.pose_all[idx_0].detach().cpu().numpy()
-        pose_1 = self.pose_all[idx_1].detach().cpu().numpy()
-        pose_0 = np.linalg.inv(pose_0)
-        pose_1 = np.linalg.inv(pose_1)
+        pose_0 = np.linalg.inv(self.pose_all[idx_0])
+        pose_1 = np.linalg.inv(self.pose_all[idx_1])
         rot_0 = pose_0[:3, :3]
         rot_1 = pose_1[:3, :3]
         rots = Rot.from_matrix(np.stack([rot_0, rot_1]))
@@ -195,13 +191,17 @@ class Dataset:
         pose[:3, :3] = rot.as_matrix()
         pose[:3, 3] = ((1.0 - ratio) * pose_0 + ratio * pose_1)[:3, 3]
         pose = np.linalg.inv(pose)
-        rot = torch.from_numpy(pose[:3, :3]).cuda()
-        trans = torch.from_numpy(pose[:3, 3]).cuda()
-        rays_v = torch.matmul(
+        rot = pose[:3, :3]
+        trans = pose[:3, 3]
+        rays_v = np.matmul(
             rot[None, None, :3, :3], rays_v[:, :, :, None]
         ).squeeze()  # W, H, 3
-        rays_o = trans[None, None, :3].expand(rays_v.shape)  # W, H, 3
-        return rays_o.transpose(0, 1), rays_v.transpose(0, 1)
+        rays_o = np.repeat(
+            trans[None, None, :3], self.W // l * self.H // l, axis=0
+        ).reshape(
+            self.W // l, self.H // l, 3
+        )  # W, H, 3
+        return rays_o, np.swapaxes(rays_v, 0, 1)
 
     def near_far_from_sphere(self, rays_o, rays_d):
         a = np.sum(rays_d**2, axis=-1, keepdims=True)

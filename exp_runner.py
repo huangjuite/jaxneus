@@ -7,6 +7,7 @@ import trimesh
 from shutil import copyfile
 from tqdm import tqdm, trange
 from pyhocon import ConfigFactory
+from os.path import join as pjoin
 from tensorboardX import SummaryWriter
 from functools import partial, cached_property
 
@@ -100,7 +101,7 @@ class Runner:
         # Load checkpoint
         latest_model_name = None
         if is_continue:
-            model_list_raw = os.listdir(os.path.join(self.base_exp_dir, "checkpoints"))
+            model_list_raw = os.listdir(pjoin(self.base_exp_dir, "checkpoints"))
             model_list = []
             for model_name in model_list_raw:
                 if model_name[-3:] == "pkl" and int(model_name[5:-4]) <= self.end_iter:
@@ -108,25 +109,28 @@ class Runner:
             model_list.sort()
             latest_model_name = model_list[-1]
 
+        self.params_state: ModelState = None
         if latest_model_name is not None:
-            logging.info("Find checkpoint: {}".format(latest_model_name))
-            self.load_checkpoint(latest_model_name)
+            logging.critical("Find checkpoint: {}".format(latest_model_name))
+            self.params_state = ModelState.load(
+                pjoin(self.base_exp_dir, "checkpoints", latest_model_name)
+            )
+        else:
+            self.params_state = self.init()
 
         # Backup code and Initialize
         if self.mode[:5] == "train":
             self.file_backup()
-            self.params_state = self.init()
-
-        self.validate_mesh()
-        self.validate_image()
+            self.validate_mesh()
+            self.validate_image()
 
     def init(self, key=jax.random.PRNGKey(777)) -> ModelState:
         logging.critical("Initializing model")
         # init parameters
         data = self.dataset.gen_random_rays_at(0, 2)
-        near, far = self.dataset.near_far_from_sphere(data[:, :3], data[:, 3:6])
+        near, far = self.dataset.near_far_from_sphere(data[0, :3], data[0, 3:6])
         params_ = self.renderer.init(
-            key, data[:, :3], data[:, 3:6], near, far, jnp.ones((3))
+            key, data[0, :3], data[0, 3:6], near, far, jnp.ones((3))
         )
         opt_state = self.optimizer.init(params_)
         # pretrain sdf
@@ -141,15 +145,13 @@ class Runner:
     def _render(self):
         @jax.jit
         def _inner(params, rays_o, rays_d, near, far, background_rgb, cos_anneal_ratio):
-            render_out = self.renderer.apply(
+            rend_fn = partial(
+                self.renderer.apply,
                 params,
-                rays_o,
-                rays_d,
-                near,
-                far,
                 background_rgb=background_rgb,
                 cos_anneal_ratio=cos_anneal_ratio,
             )
+            render_out = jax.vmap(rend_fn)(rays_o, rays_d, near, far)
             return render_out
 
         return _inner
@@ -193,24 +195,29 @@ class Runner:
             cos_anneal_ratio=self.get_cos_anneal_ratio(),
         )
 
-        psnr = 20.0 * jnp.log10(
-            1.0
-            / jnp.sqrt(
-                jnp.sum((render_out["color_fine"] - true_rgb) ** 2 * mask)
-                / (mask_sum * 3.0)
-            )
-        )
-
-        color_error = (render_out["color_fine"] - true_rgb) * mask
+        color_error = (render_out["color"] - true_rgb) * mask
         color_fine_loss = jnp.abs(color_error).sum() / mask_sum
-        eikonal_loss = render_out["gradient_err"]
+
+        grad_norm = jnp.linalg.norm(render_out["gradients"], ord=2, axis=-1)
+        grad_err = (grad_norm - 1) ** 2
+        grad_maks = render_out["relax_inside_sphere"]
+        eikonal_loss = jnp.sum(grad_maks * grad_err) / (jnp.sum(grad_maks) + 1e-5)
+
         mask_loss = jnp.mean(
             optax.losses.sigmoid_binary_cross_entropy(render_out["weight_sum"], mask)
         )
+
         loss = (
             color_fine_loss
             + eikonal_loss * self.igr_weight
             + mask_loss * self.mask_weight
+        )
+
+        psnr = 20.0 * jnp.log10(
+            1.0
+            / jnp.sqrt(
+                jnp.sum((render_out["color"] - true_rgb) ** 2 * mask) / (mask_sum * 3.0)
+            )
         )
 
         info = {
@@ -238,7 +245,7 @@ class Runner:
         return info, ModelState(new_params, new_opt_state)
 
     def train(self):
-        self.writer = SummaryWriter(log_dir=os.path.join(self.base_exp_dir, "logs"))
+        self.writer = SummaryWriter(log_dir=pjoin(self.base_exp_dir, "logs"))
         iter_step = int(self.params_state.opt_state.count)
         image_perm = self.get_image_perm()
 
@@ -308,9 +315,9 @@ class Runner:
             )
 
         mesh = trimesh.Trimesh(vertices, triangles)
-        mesh_dir = os.path.join(self.base_exp_dir, "meshes")
+        mesh_dir = pjoin(self.base_exp_dir, "meshes")
         os.makedirs(mesh_dir, exist_ok=True)
-        mesh_fp = os.path.join(
+        mesh_fp = pjoin(
             mesh_dir, "{:0>8d}.ply".format(self.params_state.opt_state.count)
         )
         mesh.export(mesh_fp)
@@ -348,7 +355,7 @@ class Runner:
                 cos_anneal_ratio=self.get_cos_anneal_ratio(),
             )
 
-            out_rgb_fine.append(render_out["color_fine"])
+            out_rgb_fine.append(render_out["color"])
             n_samples = self.renderer.n_samples + self.renderer.n_importance
             normals = (
                 render_out["gradients"] * render_out["weights"][:, :n_samples, None]
@@ -367,13 +374,13 @@ class Runner:
         normal_img = np.matmul(rot[None, :, :], normal_img[:, :, None])
         normal_img = (128 + 128 * normal_img).clip(0, 255).reshape([H, W, 3])
 
-        os.makedirs(os.path.join(self.base_exp_dir, "validations_fine"), exist_ok=True)
-        os.makedirs(os.path.join(self.base_exp_dir, "normals"), exist_ok=True)
+        os.makedirs(pjoin(self.base_exp_dir, "validations_fine"), exist_ok=True)
+        os.makedirs(pjoin(self.base_exp_dir, "normals"), exist_ok=True)
 
         if len(out_rgb_fine) > 0:
             org_img = self.dataset.image_at(idx, resolution_level=resolution_level)
             cv.imwrite(
-                os.path.join(
+                pjoin(
                     self.base_exp_dir,
                     "validations_fine",
                     "{:0>8d}_{}.png".format(iter_step, idx),
@@ -382,7 +389,7 @@ class Runner:
             )
         if len(out_normal_fine) > 0:
             cv.imwrite(
-                os.path.join(
+                pjoin(
                     self.base_exp_dir,
                     "normals",
                     "{:0>8d}_{}.png".format(iter_step, idx),
@@ -390,35 +397,95 @@ class Runner:
                 normal_img,
             )
 
-    def save_checkpoint(self):
-        folder = os.path.join(self.base_exp_dir, "checkpoints")
-        os.makedirs(folder, exist_ok=True)
-        iter_step = self.params_state.opt_state.count
-        self.params_state.save(
-            os.path.join(folder, "ckpt_{:0>6d}.pkl".format(iter_step))
+    def render_novel_image(self, idx_0, idx_1, ratio, resolution_level):
+        """
+        Interpolate view between two cameras.
+        """
+        rays_o, rays_d = self.dataset.gen_rays_between(
+            idx_0, idx_1, ratio, resolution_level=resolution_level
+        )
+        W, H, _ = rays_o.shape
+        rays_o = np.array_split(rays_o.reshape(-1, 3), np.ceil(H * W / self.batch_size))
+        rays_d = np.array_split(rays_d.reshape(-1, 3), np.ceil(H * W / self.batch_size))
+
+        out_rgb_fine = []
+        for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
+            near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
+            background_rgb = jnp.ones([3]) if self.use_white_bkgd else None
+
+            render_out = self._render(
+                self.params_state.params,
+                rays_o_batch,
+                rays_d_batch,
+                near,
+                far,
+                background_rgb=background_rgb,
+                cos_anneal_ratio=self.get_cos_anneal_ratio(),
+            )
+
+            out_rgb_fine.append(render_out["color"])
+
+            del render_out
+
+        img_fine = (
+            (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256)
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
+        return img_fine
+
+    def interpolate_view(self, img_idx_0, img_idx_1):
+        images = []
+        n_frames = 60
+        for i in trange(n_frames):
+            images.append(
+                self.render_novel_image(
+                    img_idx_0,
+                    img_idx_1,
+                    np.sin(((i / n_frames) - 0.5) * np.pi) * 0.5 + 0.5,
+                    resolution_level=4,
+                )
+            )
+        for i in range(n_frames):
+            images.append(images[n_frames - i - 1])
+
+        fourcc = cv.VideoWriter_fourcc(*"mp4v")
+        video_dir = os.path.join(self.base_exp_dir, "render")
+        os.makedirs(video_dir, exist_ok=True)
+        h, w, _ = images[0].shape
+        iter_step = int(self.params_state.opt_state.count)
+        writer = cv.VideoWriter(
+            os.path.join(
+                video_dir,
+                "{:0>8d}_{}_{}.mp4".format(iter_step, img_idx_0, img_idx_1),
+            ),
+            fourcc,
+            30,
+            (w, h),
         )
 
-    def load_checkpoint(self, checkpoint_name):
-        self.params_state.load(
-            os.path.join(self.base_exp_dir, "checkpoints", checkpoint_name)
-        )
-        logging.info("model loaded")
+        for image in images:
+            writer.write(image)
+
+        writer.release()
+
+    def save_checkpoint(self):
+        folder = pjoin(self.base_exp_dir, "checkpoints")
+        os.makedirs(folder, exist_ok=True)
+        iter_step = self.params_state.opt_state.count
+        self.params_state.save(pjoin(folder, "ckpt_{:0>6d}.pkl".format(iter_step)))
 
     def file_backup(self):
         dir_lis = self.conf["general.recording"]
-        os.makedirs(os.path.join(self.base_exp_dir, "recording"), exist_ok=True)
+        os.makedirs(pjoin(self.base_exp_dir, "recording"), exist_ok=True)
         for dir_name in dir_lis:
-            cur_dir = os.path.join(self.base_exp_dir, "recording", dir_name)
+            cur_dir = pjoin(self.base_exp_dir, "recording", dir_name)
             os.makedirs(cur_dir, exist_ok=True)
             files = os.listdir(dir_name)
             for f_name in files:
                 if f_name[-3:] == ".py":
-                    copyfile(
-                        os.path.join(dir_name, f_name), os.path.join(cur_dir, f_name)
-                    )
-        copyfile(
-            self.conf_path, os.path.join(self.base_exp_dir, "recording", "config.conf")
-        )
+                    copyfile(pjoin(dir_name, f_name), pjoin(cur_dir, f_name))
+        copyfile(self.conf_path, pjoin(self.base_exp_dir, "recording", "config.conf"))
 
 
 if __name__ == "__main__":
@@ -444,9 +511,8 @@ if __name__ == "__main__":
         runner.validate_mesh(
             world_space=True, resolution=512, threshold=args.mcube_threshold
         )
-    # TODO
-    # elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
-    #     _, img_idx_0, img_idx_1 = args.mode.split('_')
-    #     img_idx_0 = int(img_idx_0)
-    #     img_idx_1 = int(img_idx_1)
-    #     runner.interpolate_view(img_idx_0, img_idx_1)
+    elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
+        _, img_idx_0, img_idx_1 = args.mode.split('_')
+        img_idx_0 = int(img_idx_0)
+        img_idx_1 = int(img_idx_1)
+        runner.interpolate_view(img_idx_0, img_idx_1)

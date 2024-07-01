@@ -1,6 +1,6 @@
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Float, Int, PyTree, PRNGKeyArray
 import flax.linen as nn
 from functools import partial
 
@@ -121,12 +121,7 @@ class NeusRenderer(nn.Module):
         z_vals: Float[Array, "n_sample"],
         sample_dist: Float,
         background_rgb: Float[Array, "3"] = None,
-    ) -> tuple[
-        Float[Array, "3"],  # color
-        Float[Array, "n_sample 3"],  # sampled color
-        Float[Array, "n_sample"],  # alpha
-        Float[Array, "n_sample"],  # weights
-    ]:
+    ) -> PyTree:
         """Render background color for single ray.
 
         Ooutputs:
@@ -155,7 +150,12 @@ class NeusRenderer(nn.Module):
         if background_rgb is not None:
             color = color + background_rgb * (1.0 - jnp.sum(weights))
 
-        return color, sampled_color, alpha, weights
+        return {
+            "color": color,
+            "sampled_color": sampled_color,
+            "alpha": alpha,
+            "weights": weights,
+        }
 
     def render_core(
         self,
@@ -167,17 +167,7 @@ class NeusRenderer(nn.Module):
         background_rgb: Float[Array, "3"] = None,
         sample_dist: Float = 0.03,
         cos_anneal_ratio: Float = 0.0,
-    ) -> tuple[
-        Float[Array, "3"],  # color
-        Float[Array, "n_sample"],  # sd
-        Float[Array, "n_sample 3"],  # sdf_grad
-        Float[Array, "n_sample"],  # gradient_err
-        Float[Array, "n_sample"],  # s_val
-        Float[Array, "m_sample"],  # weights
-        Float[Array, "n_sample"],  # cdf
-        Float[Array, "n_sample"],  # inside_sphere
-        Float[Array, "n_sample"],  # relax_inside_sphere
-    ]:
+    ) -> PyTree:
         """Render color for single ray with signed distance.
 
         Outputs:
@@ -252,46 +242,43 @@ class NeusRenderer(nn.Module):
         if background_rgb is not None:
             color = color + background_rgb * (1.0 - jnp.sum(weights))
 
-        gradient_err = (jnp.linalg.norm(sdf_grad, ord=2, axis=-1) - 1) ** 2
-
-        return (
-            color,
-            sd,
-            sdf_grad,
-            gradient_err,
-            1.0 / inv_s,
-            weights,
-            c,
-            inside_sphere,
-            relax_inside_sphere,
-        )
+        return {
+            "color": color,
+            "sd": sd,
+            "sdf_grad": sdf_grad,
+            "s_val": 1.0 / inv_s,
+            "weights": weights,
+            "cdf": c,
+            "inside_sphere": inside_sphere,
+            "relax_inside_sphere": relax_inside_sphere,
+        }
 
     def __call__(
         self,
-        rays_o: Float[Array, "b 3"],
-        rays_d: Float[Array, "b 3"],
-        near: Float[Array, "b 1"],
-        far: Float[Array, "b 1"],
+        ray_o: Float[Array, "3"],
+        ray_d: Float[Array, "3"],
+        near: Float[Array, "1"],
+        far: Float[Array, "1"],
         background_rgb: Float[Array, "3"] = None,
         perturb_overwrite: Float = -1,
         cos_anneal_ratio: Float = 0.0,
+        key: PRNGKeyArray = jax.random.PRNGKey(777),
     ) -> PyTree:
-        """render a batch of rays.
+        """render single ray.
 
         outputs:
-            color_fine: [b, 3]
-            s_val: [b, 1]
-            cdf: [b, n_samples]
-            weight_sum: [b, 1]
-            weight_max: [b, 1]
-            weights: [b, n_samples]
-            sdf_grad: [b, n_samples, 3]
-            gradient_err: []
-            inside_sphere: [b, n_samples]
+            color: [3]
+            s_val: [1]
+            cdf: [n_samples]
+            weight_sum: [1]
+            weight_max: [1]
+            weights: [n_samples]
+            sdf_grad: [n_samples, 3]
+            inside_sphere: [n_samples]
+            relax_inside_sphere: [n_samples]
         """
 
         # sample depth values
-        batch_size = rays_o.shape[0]
         sample_dist = 2.0 / self.n_samples
         z_vals = jnp.linspace(0, 1, self.n_samples)
         z_vals = near + z_vals * (far - near)
@@ -301,94 +288,79 @@ class NeusRenderer(nn.Module):
             z_vals_outside = jnp.linspace(
                 1e-3, 1.0 - 1.0 / (self.n_outside + 1), self.n_outside
             )
-        
+
         perturb = self.perturb
         if perturb_overwrite >= 0:
             perturb = perturb_overwrite
         if perturb > 0:
-            t_rand = jax.random.uniform(jax.random.PRNGKey(777), (batch_size, 1)) - 0.5
+            t_rand = jax.random.uniform(key, (1,)) - 0.5
             z_vals = z_vals + t_rand * sample_dist
 
             if self.n_outside > 0:
-                mids = 0.5 * (z_vals_outside[..., 1:] + z_vals_outside[..., :-1])
-                upper = jnp.concatenate([mids, z_vals_outside[..., -1:]], axis=-1)
-                lower = jnp.concatenate([z_vals_outside[..., :1], mids], axis=-1)
-                t_rand = jax.random.uniform(
-                    jax.random.PRNGKey(777), (batch_size, z_vals_outside.shape[-1])
-                )
+                mids = 0.5 * (z_vals_outside[1:] + z_vals_outside[:-1])
+                upper = jnp.concatenate([mids, z_vals_outside[-1:]])
+                lower = jnp.concatenate([z_vals_outside[:1], mids])
+                t_rand = jax.random.uniform(key, (z_vals_outside.shape[-1],))
                 z_vals_outside = lower + t_rand * (upper - lower)
 
         if self.n_outside > 0:
-            z_vals_outside = (
-                far / jnp.flip(z_vals_outside, axis=-1) + 1 / self.n_samples
-            )
+            z_vals_outside = far / jnp.flip(z_vals_outside) + 1 / self.n_samples
 
         # up sampling
-        n_samples = self.n_samples
         if self.n_importance > 0:
-            pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]
+            pts = ray_o[None, :] + ray_d[None, :] * z_vals[:, None]
             sds = self.sdf_network(jax.lax.stop_gradient(pts.reshape(-1, 3)))[:, 0]
-            sds = sds.reshape(batch_size, n_samples)
 
             for i in range(self.up_sample_steps):
-                sample_f = partial(
-                    self.up_sample,
+                new_z_vals = self.up_sample(
+                    ray_o,
+                    ray_d,
+                    z_vals,
+                    sds,
                     n_importance=self.n_importance // self.up_sample_steps,
                     inv_s=64 * 2**i,
                 )
-                new_z_vals = jax.vmap(sample_f)(rays_o, rays_d, z_vals, sds)
-
-                z_vals, sds = jax.vmap(
-                    partial(self.cat_z_vals, last=i == self.up_sample_steps - 1)
-                )(rays_o, rays_d, z_vals, new_z_vals, sds)
-            n_samples = self.n_samples + self.n_importance
+                z_vals, sds = self.cat_z_vals(
+                    ray_o,
+                    ray_d,
+                    z_vals,
+                    new_z_vals,
+                    sds,
+                    last=(i == self.up_sample_steps - 1),
+                )
 
         # render background
-        background_alpha = None
-        background_sampled_color = None
+        rend_outside = {"alpha": None, "sampled_color": None}
         if self.n_outside > 0:
-            z_vals_feed = jnp.concatenate([z_vals, z_vals_outside], axis=-1)
-            z_vals_feed = jnp.sort(z_vals_feed, axis=-1)
-            _, background_sampled_color, background_alpha, _ = jax.vmap(
-                partial(self.render_core_outside, sample_dist=sample_dist)
-            )(rays_o, rays_d, z_vals_feed)
+            z_vals_feed = jnp.concatenate([z_vals, z_vals_outside])
+            z_vals_feed = jnp.sort(z_vals_feed)
+            rend_outside = self.render_core_outside(
+                ray_o, ray_d, z_vals_feed, sample_dist=sample_dist
+            )
 
         # render core
-        render_fn = partial(
-            self.render_core,
+        rend_core = self.render_core(
+            ray_o,
+            ray_d,
+            z_vals,
+            rend_outside["alpha"],
+            rend_outside["sampled_color"],
             sample_dist=sample_dist,
             background_rgb=background_rgb,
             cos_anneal_ratio=cos_anneal_ratio,
         )
-        (
-            color_fine,
-            sd,
-            sdf_grad,
-            gradient_err,
-            s_val,
-            weights,
-            cdf,
-            inside_sphere,
-            relax_inside_sphere,
-        ) = jax.vmap(render_fn)(
-            rays_o, rays_d, z_vals, background_alpha, background_sampled_color
-        )
-
-        weight_sum = jnp.sum(weights, axis=-1, keepdims=True)
-        weight_max = jnp.max(weights, axis=-1, keepdims=True)
-        s_val = jnp.mean(s_val, axis=-1, keepdims=True)
-        gradient_err = jnp.sum(relax_inside_sphere * gradient_err) / (
-            jnp.sum(relax_inside_sphere) + 1e-5
-        )
+        weight_sum = jnp.sum(rend_core["weights"], keepdims=True)
+        weight_max = jnp.max(rend_core["weights"], keepdims=True)
+        s_val = jnp.mean(rend_core["s_val"], keepdims=True)
 
         return {
-            "color_fine": color_fine,
+            "color": rend_core["color"],
             "s_val": s_val,
-            "cdf": cdf,
+            "cdf": rend_core["cdf"],
             "weight_sum": weight_sum,
             "weight_max": weight_max,
-            "weights": weights,
-            "gradients": sdf_grad,
-            "gradient_err": gradient_err,
-            "inside_sphere": inside_sphere,
+            "weights": rend_core["weights"],
+            "gradients": rend_core["sdf_grad"],
+            "inside_sphere": rend_core["inside_sphere"],
+            "relax_inside_sphere": rend_core["relax_inside_sphere"],
         }
