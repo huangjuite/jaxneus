@@ -2,6 +2,8 @@
 
 This is a [Jax](https://github.com/google/jax) implementation of [NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction](https://github.com/Totoro97/NeuS).
 
+![](./figures/scan114.gif)
+
 ## Installation
 
 recommend using conda
@@ -53,5 +55,5 @@ please follow original NeuS guideline to prepare custom data.
 More information can be found in [preprocess_custom_data](https://github.com/Totoro97/NeuS/tree/main/preprocess_custom_data).
 
 ## Notes
-Follow the NeuS code structure and command line for experiments. The rendering function is designed to handle a single ray and vectorized to apply to a batch of rays. The rendering procedure is optimized for speed using just-in-time compilation (JIT). If anyone knows how to speed up more, please sent a PR.
+Follow the NeuS code structure and command line for experiments. The rendering function is designed to handle a single ray and vectorized to apply to a batch of rays. The rendering procedure is optimized for speed using just-in-time compilation (JIT).
 
