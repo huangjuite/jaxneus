@@ -17,6 +17,7 @@ class NeusRenderer(nn.Module):
     n_outside: int
     up_sample_steps: int
     perturb: float
+    rng_name: str = "perturb"
 
     def sample_pdf(
         self,
@@ -262,7 +263,6 @@ class NeusRenderer(nn.Module):
         background_rgb: Float[Array, "3"] = None,
         perturb_overwrite: Float = -1,
         cos_anneal_ratio: Float = 0.0,
-        key: PRNGKeyArray = jax.random.PRNGKey(777),
     ) -> PyTree:
         """render single ray.
 
@@ -293,14 +293,16 @@ class NeusRenderer(nn.Module):
         if perturb_overwrite >= 0:
             perturb = perturb_overwrite
         if perturb > 0:
-            t_rand = jax.random.uniform(key, (1,)) - 0.5
+            t_rand = jax.random.uniform(self.make_rng(self.rng_name), (1,)) - 0.5
             z_vals = z_vals + t_rand * sample_dist
 
             if self.n_outside > 0:
                 mids = 0.5 * (z_vals_outside[1:] + z_vals_outside[:-1])
                 upper = jnp.concatenate([mids, z_vals_outside[-1:]])
                 lower = jnp.concatenate([z_vals_outside[:1], mids])
-                t_rand = jax.random.uniform(key, (z_vals_outside.shape[-1],))
+                t_rand = jax.random.uniform(
+                    self.make_rng(self.rng_name), (z_vals_outside.shape[-1],)
+                )
                 z_vals_outside = lower + t_rand * (upper - lower)
 
         if self.n_outside > 0:

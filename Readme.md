@@ -2,7 +2,8 @@
 
 This is a [Jax](https://github.com/google/jax) implementation of [NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction](https://github.com/Totoro97/NeuS).
 
-![](./figures/scan114.gif)
+<img src="figures/scan114.gif" alt="drawing" width="200"/>
+<img src="figures/scan110.gif" alt="drawing" width="200"/>
 
 ## Installation
 
@@ -19,7 +20,6 @@ prepare [datasets](https://www.dropbox.com/scl/fo/um3wj3ctiuoottbfmqmgb/ABZRltsz
 
 
 ## Running
-
 
 - **Training without masks**
 
@@ -49,7 +49,7 @@ python exp_runner.py --mode interpolate_<img_idx_0>_<img_idx_1> --conf <config_f
 
 The corresponding image set of view interpolation can be found in `exp/<case_name>/<exp_name>/render/`.
 
-## Train NeuS with your custom data
+## Train with your custom data
 
 please follow original NeuS guideline to prepare custom data.
 More information can be found in [preprocess_custom_data](https://github.com/Totoro97/NeuS/tree/main/preprocess_custom_data).

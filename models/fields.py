@@ -7,7 +7,7 @@ from models.embedder import FreqEmbedder
 
 def InitNormal(mean=0.0, stddev=1.0):
     def init(key, shape, dtype=jnp.float32):
-        return jax.random.normal(key, shape, dtype) * stddev + mean
+        return mean + stddev * jax.random.normal(key, shape, dtype)
 
     return init
 
@@ -25,7 +25,7 @@ class SeperateInitializedDense(nn.Module):
     ) -> Float[Array, "b f"]:
         w1 = self.param(
             "kernel/w1",
-            InitNormal(stddev=jnp.sqrt(2.0 / self.features)),
+            InitNormal(stddev=(jnp.sqrt(2.0) / jnp.sqrt(self.features))),
             (x1.shape[-1], self.features),
         )
         w2 = self.param(
@@ -65,20 +65,22 @@ class SDFNetwork(nn.Module):
 
             if self.geometric_init:
                 if l == self.num_layers - 2:
-                    mean = jnp.sqrt(jnp.pi / dims[l])
+                    mean = jnp.sqrt(jnp.pi) / jnp.sqrt(dims[l])
                     mean *= -1 if self.inside_outside else 1
                     bias = self.bias if self.inside_outside else -self.bias
                     lin = nn.Dense(
                         out_dim,
                         kernel_init=InitNormal(mean=mean, stddev=0.0001),
-                        bias_init=nn.initializers.constant(bias),
+                        bias_init=nn.initializers.constant(bias / jnp.pi),
                     )
                 elif self.multires > 0 and (l == 0 or l in self.skip_in):
                     lin = SeperateInitializedDense(out_dim)
                 else:
                     lin = nn.Dense(
                         out_dim,
-                        kernel_init=InitNormal(stddev=jnp.sqrt(2.0 / out_dim)),
+                        kernel_init=InitNormal(
+                            stddev=(jnp.sqrt(2.0) / jnp.sqrt(out_dim))
+                        ),
                         bias_init=nn.initializers.zeros_init(),
                     )
 
@@ -115,7 +117,6 @@ class SDFNetwork(nn.Module):
 
             if l < self.num_layers - 2:
                 x = self._softplus(x, beta=100)
-                # x = nn.softplus(x * 100) / 100
 
         sd = x[:, :1] / self.scale
         feature = x[:, 1:]
