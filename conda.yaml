@@ -5,8 +5,8 @@ channels:
   - nvidia
 dependencies:
   - python=3.11
-  - jax
   - jaxlib=*=*cuda*
+  - jax
   - cuda-nvcc
   - jaxtyping
   - optax

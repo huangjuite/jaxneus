@@ -7,6 +7,6 @@ wait
 mv ABZRltszDvWHJ824UL6DHw0?rlkey=3vjok0aivnoiaf8z5j6w05k92 public_data.zip
 unzip public_data.zip
 rm public_data.zip
-unzip *.zip
+unzip \*.zip
 rm *.zip
 cd ..

@@ -1,9 +1,13 @@
 # JaxNeuS
 
-This is a [Jax](https://github.com/google/jax) implementation of [NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction](https://github.com/Totoro97/NeuS).
+This is a [JAX](https://github.com/google/jax) implementation of [NeuS: Learning Neural Implicit Surfaces by Volume Rendering for Multi-view Reconstruction](https://github.com/Totoro97/NeuS).
 
-<img src="figures/scan114.gif" alt="drawing" width="200"/>
-<img src="figures/scan110.gif" alt="drawing" width="200"/>
+<p float="left">
+    <img src="figures/scan114.gif" alt="drawing" width="200"/>
+    <img src="figures/scan110.gif" alt="drawing" width="200"/>
+    <img src="figures/bear.gif" alt="drawing" width="200"/>
+    <img src="figures/thin.gif" alt="drawing" width="200"/>
+</p>
 
 ## Installation
 
@@ -48,11 +52,6 @@ python exp_runner.py --mode interpolate_<img_idx_0>_<img_idx_1> --conf <config_f
 ```
 
 The corresponding image set of view interpolation can be found in `exp/<case_name>/<exp_name>/render/`.
-
-## Train with your custom data
-
-please follow original NeuS guideline to prepare custom data.
-More information can be found in [preprocess_custom_data](https://github.com/Totoro97/NeuS/tree/main/preprocess_custom_data).
 
 ## Notes
 Follow the NeuS code structure and command line for experiments. The rendering function is designed to handle a single ray and vectorized to apply to a batch of rays. The rendering procedure is optimized for speed using just-in-time compilation (JIT).
