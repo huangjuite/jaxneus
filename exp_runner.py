@@ -256,7 +256,7 @@ class Runner:
     def train(self, key=jax.random.key(777)):
         self.writer = SummaryWriter(log_dir=pjoin(self.base_exp_dir, "logs"))
         iter_step = int(self.params_state.opt_state.count)
-        image_perm = self.get_image_perm()
+        image_perm = self.get_image_perm(key)
 
         logging.critical("tracing computation graph")
         step_once = jax.jit(self._step)
@@ -295,7 +295,7 @@ class Runner:
                 self.validate_mesh()
 
             if iter_step % len(image_perm) == 0:
-                image_perm = self.get_image_perm()
+                image_perm = self.get_image_perm(key)
 
     def get_image_perm(self, key=jax.random.key(0)):
         return jax.random.permutation(key, self.dataset.n_images)
